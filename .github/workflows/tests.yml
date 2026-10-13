@@ -1,9 +1,11 @@
 name: "Tests"
 on:
-  pull_request:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional jasmine spec file filter'
+        required: false
+        default: ''
 
 jobs:
   Test:
@@ -12,6 +14,7 @@ jobs:
       matrix:
         node_version: ['lts/*', 'node']
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
@@ -22,13 +25,27 @@ jobs:
       - name: Install Dependencies
         run: npm ci
       - name: Run Unit Tests 👩🏽‍💻
-        run: npm run test:unit
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            npm test -- ${{ inputs.test-filter }}
+          else
+            npm run test:unit
+          fi
       - name: Run Spec Tests 👩🏽‍💻
-        run: npm run test:specs
+        run: |
+          if [ -z "${{ inputs.test-filter }}" ]; then
+            npm run test:specs
+          fi
+      - name: Run Full Jasmine Suite (combined spec count)
+        run: |
+          if [ -z "${{ inputs.test-filter }}" ]; then
+            npm test
+          fi
 
   Lint:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
@@ -39,16 +56,21 @@ jobs:
 
   Release:
     needs: [Test, Lint]
-    if: |
-      github.ref == 'refs/heads/master' &&
-      github.event.repository.fork == false
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
       - name: Install Dependencies
         run: npm ci
+      - name: Install faketime
+        run: sudo apt-get update && sudo apt-get install -y faketime
       - name: Build 🗜️
+        env:
+          LD_PRELOAD: /usr/lib/x86_64-linux-gnu/faketime/libfaketime.so.1
+          FAKETIME: '@2021-05-27 16:00:00'
+          FAKETIME_DONT_FAKE_MONOTONIC: '1'
         run: |
           npm run build
           if ! git diff --quiet; then
@@ -56,15 +78,22 @@ jobs:
             git config --global user.name "MarkedJS bot"
             git commit -am "🗜️ build [skip ci]"
           fi
-      - name: Release 🎉
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npx semantic-release
+      - name: Pack
+        run: |
+          mkdir -p dist-pack
+          npm pack --pack-destination dist-pack || (npm pack && mv marked-*.tgz dist-pack/)
+          ls -la dist-pack
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: marked-npm-package
+          path: dist-pack/*.tgz
+          if-no-files-found: error
 
   Skip:
     if: contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Skip CI 🚫
         run: echo skip ci
